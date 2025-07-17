@@ -2,9 +2,9 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 from typing import TypedDict, List
-from langgraph.prebuilt import tools_condition, ToolNode
+from langchain.prebuilt import tools_condition, ToolNode
 from langchain_openai import ChatOpenAI
-from your_chains import llm_with_tools  
+from your_chains import llm_with_tools
 
 # Define state with a message history
 class MessagesState(TypedDict):
@@ -20,7 +20,8 @@ def llm_node(system_prompt: str):
         return state
     return node
 
-llm = ChatOpenAI(model="gpt-4o-mini")  
+# Instantiate LLM
+llm = ChatOpenAI(model="gpt-4o-mini")  # Used only for backup
 
 # Define system prompts for each node
 prompts = {
@@ -28,7 +29,7 @@ prompts = {
     "SpeechToText": "Use ElevenLabs STT to transcribe incoming audio from the user. Ensure accuracy and pass the clean transcription to the Intent Classifier.",
     "IntentClassifier": "Classify the user's intent based on the transcription. The possible intents are: order, reservation, complaint. Output one of these three categories and route to the corresponding flow.",
     "OrderFlow": "Initiate an order flow. Ask the user whether they want pickup or delivery, and guide them through selecting items from the menu.",
-    "CheckMissingOrderInfo": "Check the order for missing information(User Name, Phone Number, Delivery Address, Items Selected, Quantity or Special Requests) and ask only the missing parts.",
+    "CheckMissingOrderInfo": "Check the order for missing information (User Name, Phone Number, Delivery Address, Items Selected, Quantity or Special Requests) and ask only the missing parts.",
     "OrderConfirmation": "Summarize the full order. Repeat items, pickup/delivery details, and price. End with: “Thanks for placing your order. This is a demo of my capabilities, I hope you enjoyed the experience. How else can I assist you today?”",
     "ReservationFlow": "Initiate a reservation flow. Ask the user for their details and preferences for the booking.",
     "GatherReservationInfo": "Ask for name, phone number, date and time, number of people, and table preference.",
@@ -48,37 +49,31 @@ prompts = {
 graph = StateGraph(MessagesState)
 
 # Add nodes
-graph.add_node("Start", llm_node(prompts["Start"]))
-graph.add_node("SpeechToText", llm_node(prompts["SpeechToText"]))
-graph.add_node("IntentClassifier", llm_node(prompts["IntentClassifier"]))
-graph.add_node("OrderFlow", llm_node(prompts["OrderFlow"]))
-graph.add_node("CheckMissingOrderInfo", llm_node(prompts["CheckMissingOrderInfo"]))
-graph.add_node("OrderConfirmation", llm_node(prompts["OrderConfirmation"]))
-graph.add_node("ReservationFlow", llm_node(prompts["ReservationFlow"]))
-graph.add_node("GatherReservationInfo", llm_node(prompts["GatherReservationInfo"]))
-graph.add_node("CheckMissingReservationInfo", llm_node(prompts["CheckMissingReservationInfo"]))
-graph.add_node("ReservationConfirmation", llm_node(prompts["ReservationConfirmation"]))
-graph.add_node("ComplaintFlow", llm_node(prompts["ComplaintFlow"]))
-graph.add_node("LogComplaint", llm_node(prompts["LogComplaint"]))
-graph.add_node("LiveHandoff", llm_node(prompts["LiveHandoff"]))
-graph.add_node("SaveToSheet", llm_node(prompts["SaveToSheet"]))
-graph.add_node("TextToSpeech", llm_node(prompts["TextToSpeech"]))
-graph.add_node("CheckDone", llm_node(prompts["CheckDone"]))
-graph.add_node("LoopBack", llm_node(prompts["LoopBack"]))
-graph.add_node("FinalExit", llm_node(prompts["FinalExit"]))
+for node_name, prompt in prompts.items():
+    graph.add_node(node_name, llm_node(prompt))
 
-# Define transitions
+# Set start
 graph.set_entry_point("Start")
+
+# Linear flow up to intent
 graph.add_edge("Start", "SpeechToText")
 graph.add_edge("SpeechToText", "IntentClassifier")
 
-# Conditional routing based on intent
-intent_router = lambda state: (
-    state.update({"last_intent": "order"}) or "OrderFlow" if "order" in state["messages"][-1].content.lower() else
-    state.update({"last_intent": "reservation"}) or "ReservationFlow" if "reservation" in state["messages"][-1].content.lower() else
-    state.update({"last_intent": "complaint"}) or "ComplaintFlow" if "complaint" in state["messages"][-1].content.lower() else
-    "FinalExit"
-)
+# Intent routing logic
+def intent_router(state: MessagesState) -> str:
+    last_msg = state["messages"][-1].content.lower()
+    if "order" in last_msg:
+        state["last_intent"] = "order"
+        return "OrderFlow"
+    elif "reservation" in last_msg:
+        state["last_intent"] = "reservation"
+        return "ReservationFlow"
+    elif "complaint" in last_msg:
+        state["last_intent"] = "complaint"
+        return "ComplaintFlow"
+    else:
+        return "FinalExit"
+
 graph.add_conditional_edges("IntentClassifier", intent_router)
 
 # Order flow
@@ -97,23 +92,29 @@ graph.add_edge("ComplaintFlow", "LogComplaint")
 graph.add_edge("LogComplaint", "LiveHandoff")
 graph.add_edge("LiveHandoff", "FinalExit")
 
-# Final sequence
+# Shared final stage
 graph.add_edge("SaveToSheet", "TextToSpeech")
 graph.add_edge("TextToSpeech", "CheckDone")
 
-def loopback_router(state):
+# Loop back routing
+def loopback_router(state: MessagesState) -> str:
     return {
         "order": "OrderFlow",
         "reservation": "ReservationFlow",
         "complaint": "ComplaintFlow"
     }.get(state.get("last_intent", "order"), "OrderFlow")
 
-done_check = lambda state: (
-    loopback_router(state) if "yes" in state["messages"][-1].content.lower() else "FinalExit"
-)
-graph.add_conditional_edges("CheckDone", done_check)
+def done_check(state: MessagesState) -> str:
+    last_msg = state["messages"][-1].content.lower()
+    if "yes" in last_msg:
+        return loopback_router(state)
+    return "FinalExit"
 
+graph.add_conditional_edges("CheckDone", done_check)
+graph.add_edge("LoopBack", "TextToSpeech")
+
+# Set end
 graph.set_finish_point("FinalExit")
 
-# Compile the graph
+# Compile graph
 app = graph.compile()

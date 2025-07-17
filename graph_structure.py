@@ -1,17 +1,15 @@
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph
 from langchain_core.messages import SystemMessage
-from langchain_core.runnables import RunnableConfig
 from typing import TypedDict, List
-from langchain.prebuilt import tools_condition, ToolNode
 from langchain_openai import ChatOpenAI
 from your_chains import llm_with_tools
 
-# Define state with a message history
+# Define state with message history and last recognized intent
 class MessagesState(TypedDict):
     messages: List
     last_intent: str
 
-# Define reusable function to invoke the LLM with a system prompt
+# Helper to create LLM nodes with system prompts
 def llm_node(system_prompt: str):
     def node(state: MessagesState) -> MessagesState:
         sys_msg = SystemMessage(content=system_prompt)
@@ -20,10 +18,7 @@ def llm_node(system_prompt: str):
         return state
     return node
 
-# Instantiate LLM
-llm = ChatOpenAI(model="gpt-4o-mini")  # Used only for backup
-
-# Define system prompts for each node
+# Define all system prompts for each stage
 prompts = {
     "Start": "You are a Voice AI assistant for a pizza restaurant demo. Your job is to help users place delivery or pickup orders, make table reservations or handle complaints. Greet the user and wait for their input. Keep the conversation friendly, concise and helpful.",
     "SpeechToText": "Use ElevenLabs STT to transcribe incoming audio from the user. Ensure accuracy and pass the clean transcription to the Intent Classifier.",
@@ -41,25 +36,24 @@ prompts = {
     "SaveToSheet": "Store all collected information from the order or reservation into Google Sheet in the appropriate tab. Ensure timestamps, caller ID, and interaction type are saved.",
     "TextToSpeech": "Convert the assistant's response to audio using ElevenLabs TTS and return it to the user in real time.",
     "CheckDone": "Ask the user: “Would you like to do anything else—perhaps place another order or make a reservation?”",
-    "LoopBack": "Restart the previous flow if the user wants to continue.",
     "FinalExit": "Say goodbye to the user. “Thanks for calling. Have a great day!” Then end the call/session."
 }
 
-# Build the graph
+# Build graph
 graph = StateGraph(MessagesState)
 
-# Add nodes
-for node_name, prompt in prompts.items():
-    graph.add_node(node_name, llm_node(prompt))
+# Add all LLM nodes
+for name, prompt in prompts.items():
+    graph.add_node(name, llm_node(prompt))
 
-# Set start
+# Entry point
 graph.set_entry_point("Start")
 
-# Linear flow up to intent
+# Linear start path
 graph.add_edge("Start", "SpeechToText")
 graph.add_edge("SpeechToText", "IntentClassifier")
 
-# Intent routing logic
+# Conditional routing based on intent
 def intent_router(state: MessagesState) -> str:
     last_msg = state["messages"][-1].content.lower()
     if "order" in last_msg:
@@ -71,10 +65,18 @@ def intent_router(state: MessagesState) -> str:
     elif "complaint" in last_msg:
         state["last_intent"] = "complaint"
         return "ComplaintFlow"
-    else:
-        return "FinalExit"
+    return "FinalExit"
 
-graph.add_conditional_edges("IntentClassifier", intent_router)
+graph.add_conditional_edges(
+    "IntentClassifier",
+    condition=intent_router,
+    path_map={
+        "OrderFlow": "OrderFlow",
+        "ReservationFlow": "ReservationFlow",
+        "ComplaintFlow": "ComplaintFlow",
+        "FinalExit": "FinalExit"
+    }
+)
 
 # Order flow
 graph.add_edge("OrderFlow", "CheckMissingOrderInfo")
@@ -92,11 +94,11 @@ graph.add_edge("ComplaintFlow", "LogComplaint")
 graph.add_edge("LogComplaint", "LiveHandoff")
 graph.add_edge("LiveHandoff", "FinalExit")
 
-# Shared final stage
+# Shared path after Save
 graph.add_edge("SaveToSheet", "TextToSpeech")
 graph.add_edge("TextToSpeech", "CheckDone")
 
-# Loop back routing
+# Done check — loop or end
 def loopback_router(state: MessagesState) -> str:
     return {
         "order": "OrderFlow",
@@ -106,15 +108,22 @@ def loopback_router(state: MessagesState) -> str:
 
 def done_check(state: MessagesState) -> str:
     last_msg = state["messages"][-1].content.lower()
-    if "yes" in last_msg:
-        return loopback_router(state)
-    return "FinalExit"
+    return loopback_router(state) if "yes" in last_msg else "FinalExit"
 
-graph.add_conditional_edges("CheckDone", done_check)
-graph.add_edge("LoopBack", "TextToSpeech")
+graph.add_conditional_edges(
+    "CheckDone",
+    condition=done_check,
+    path_map={
+        "OrderFlow": "OrderFlow",
+        "ReservationFlow": "ReservationFlow",
+        "ComplaintFlow": "ComplaintFlow",
+        "FinalExit": "FinalExit"
+    }
+)
 
-# Set end
+# End
 graph.set_finish_point("FinalExit")
 
-# Compile graph
+# Compile the graph
 app = graph.compile()
+

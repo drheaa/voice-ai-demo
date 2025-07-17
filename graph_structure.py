@@ -2,9 +2,9 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 from typing import TypedDict, List
-
-# Import your LangChain LLM + tools chain
-from your_chains import llm_with_tools  # Assume this is defined elsewhere
+from langgraph.prebuilt import tools_condition, ToolNode
+from langchain_openai import ChatOpenAI
+from your_chains import llm_with_tools  
 
 # Define state with a message history
 class MessagesState(TypedDict):
@@ -19,6 +19,8 @@ def llm_node(system_prompt: str):
         state["messages"] = updated_messages
         return state
     return node
+
+llm = ChatOpenAI(model="gpt-4o-mini")  
 
 # Define system prompts for each node
 prompts = {

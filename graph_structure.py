@@ -2,21 +2,23 @@ from langgraph.graph import StateGraph
 from langchain_core.messages import SystemMessage
 from typing import TypedDict, List
 from langchain_openai import ChatOpenAI
-from your_chains import llm_with_tools
+from your_chains import llm_with_tools, handle_tool_calls
 
 # Define state with message history and last recognized intent
 class MessagesState(TypedDict):
     messages: List
     last_intent: str
 
-# Helper to create LLM nodes with system prompts
 def llm_node(system_prompt: str):
     def node(state: MessagesState) -> MessagesState:
         sys_msg = SystemMessage(content=system_prompt)
-        updated_messages = llm_with_tools.invoke([sys_msg] + state["messages"])
-        state["messages"] = updated_messages
+        response = llm_with_tools.invoke([sys_msg] + state["messages"])
+        state["messages"].append(response)
+
+        handle_tool_calls(response, state, llm_with_tools)
         return state
     return node
+
 
 # Define all system prompts for each stage
 prompts = {
@@ -25,7 +27,7 @@ prompts = {
     "IntentClassifier": "Classify the user's intent based on the transcription. The possible intents are: order, reservation, complaint. Output one of these three categories and route to the corresponding flow.",
     "OrderFlow": "Initiate an order flow. Ask the user whether they want pickup or delivery, and guide them through selecting items from the menu.",
     "CheckMissingOrderInfo": "Check the order for missing information (User Name, Phone Number, Delivery Address, Items Selected, Quantity or Special Requests) and ask only the missing parts.",
-    "OrderConfirmation": "Summarize the full order. Repeat items, pickup/delivery details, and price. End with: “Thanks for placing your order. This is a demo of my capabilities, I hope you enjoyed the experience. How else can I assist you today?”",
+    "OrderConfirmation": "Summarize the full order. Repeat items, pickup/delivery details and price. End with: “Thanks for placing your order. This is a demo of my capabilities, I hope you enjoyed the experience. How else can I assist you today?”",
     "ReservationFlow": "Initiate a reservation flow. Ask the user for their details and preferences for the booking.",
     "GatherReservationInfo": "Ask for name, phone number, date and time, number of people, and table preference.",
     "CheckMissingReservationInfo": "Validate that all reservation details are complete. If any are missing, ask only the missing ones.",
@@ -50,8 +52,8 @@ for name, prompt in prompts.items():
 graph.set_entry_point("Start")
 
 # Linear start path
-graph.add_edge("Start", "SpeechToText")
-graph.add_edge("SpeechToText", "IntentClassifier")
+graph.add_edge("Start", "IntentClassifier")
+#graph.add_edge("SpeechToText", "IntentClassifier")
 
 # Conditional routing based on intent
 def intent_router(state: MessagesState) -> str:
@@ -69,7 +71,7 @@ def intent_router(state: MessagesState) -> str:
 
 graph.add_conditional_edges(
     "IntentClassifier",
-    condition=intent_router,
+    intent_router,
     path_map={
         "OrderFlow": "OrderFlow",
         "ReservationFlow": "ReservationFlow",
@@ -95,8 +97,8 @@ graph.add_edge("LogComplaint", "LiveHandoff")
 graph.add_edge("LiveHandoff", "FinalExit")
 
 # Shared path after Save
-graph.add_edge("SaveToSheet", "TextToSpeech")
-graph.add_edge("TextToSpeech", "CheckDone")
+graph.add_edge("SaveToSheet", "CheckDone")
+#graph.add_edge("TextToSpeech", "CheckDone")
 
 # Done check — loop or end
 def loopback_router(state: MessagesState) -> str:
@@ -112,7 +114,7 @@ def done_check(state: MessagesState) -> str:
 
 graph.add_conditional_edges(
     "CheckDone",
-    condition=done_check,
+    done_check,
     path_map={
         "OrderFlow": "OrderFlow",
         "ReservationFlow": "ReservationFlow",

@@ -1,5 +1,6 @@
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
+from langchain_core.messages import ToolMessage
 
 # Define mock tools to be used in the LangGraph demo
 
@@ -39,3 +40,19 @@ llm = ChatOpenAI(model="gpt-4o-mini")
 
 # Bind tools to LLM
 llm_with_tools = llm.bind_tools([save_to_sheets, get_menu, send_sms])
+
+# Tool call handler function
+def handle_tool_calls(response, state, llm_with_tools):
+    if hasattr(response, "tool_calls"):
+        for tool_call in response.tool_calls:
+            tool_name = tool_call.name
+            tool_args = tool_call.args
+            tool_id = tool_call.id
+
+            tool_fn = llm_with_tools.tools.get(tool_name)
+
+            if tool_fn:
+                tool_output = tool_fn.invoke(tool_args)
+                state["messages"].append(
+                    ToolMessage(tool_call_id=tool_id, content=tool_output)
+                )

@@ -2,25 +2,13 @@ from langgraph.graph import StateGraph
 from langchain_core.messages import SystemMessage
 from typing import TypedDict, List
 from langchain_openai import ChatOpenAI
-from your_chains import llm_with_tools, handle_tool_calls
+from langgraph.prebuilt import tools_condition, ToolNode
 
 # Define state with message history and last recognized intent
 class MessagesState(TypedDict):
     messages: List
     last_intent: str
 
-def llm_node(system_prompt: str):
-    def node(state: MessagesState) -> MessagesState:
-        sys_msg = SystemMessage(content=system_prompt)
-        response = llm_with_tools.invoke([sys_msg] + state["messages"])
-        state["messages"].append(response)
-
-        handle_tool_calls(response, state, llm_with_tools)
-        return state
-    return node
-
-
-# Define all system prompts for each stage
 prompts = {
     "Start": "You are a Voice AI assistant for a pizza restaurant demo. Your job is to help users place delivery or pickup orders, make table reservations or handle complaints. Greet the user and wait for their input. Keep the conversation friendly, concise and helpful.",
     "SpeechToText": "Use ElevenLabs STT to transcribe incoming audio from the user. Ensure accuracy and pass the clean transcription to the Intent Classifier.",
@@ -40,6 +28,25 @@ prompts = {
     "CheckDone": "Ask the user: “Would you like to do anything else—perhaps place another order or make a reservation?”",
     "FinalExit": "Say goodbye to the user. “Thanks for calling. Have a great day!” Then end the call/session."
 }
+
+
+def llm_node(prompt: str):
+    system_msg = SystemMessage(content=prompt)
+
+    def node(state: MessagesState):
+        return {
+            "messages": [llm_with_tools.invoke([system_msg] + state["messages"])]
+        }
+
+    return node
+
+
+tools = []
+
+llm = ChatOpenAI(model="gpt-4o")
+llm_with_tools = llm.bind_tools(tools)
+
+# Define all system prompts for each stage
 
 # Build graph
 graph = StateGraph(MessagesState)

@@ -2,7 +2,6 @@
   "entrypoint": "graph_structure.py",
   "python_version": "3.12",
   "dependencies": [
-    "langgraph"
   ],
   "graphs": {
     "app": "./graph_structure.py:app"
